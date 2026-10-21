@@ -171,23 +171,70 @@ async def rfid_task(rfid_state, rfid_reader):
             await uasyncio.sleep(1)
 
 
-# ==================== 任務：PIR ====================
+# ==================== 任務：PIR（修復版） ====================
 async def motion_task(motion_state, ir_sensor, buzzer):
+    print("[Task] PIR 進出交替任務已啟動")
+
+    # 補上這段，讓網頁知道 PIR 已經準備好了
+    try:
+        motion_state["sensor_status"] = "ready"
+        motion_state["sensor_error"] = None
+        motion_state["music_status"] = "idle"
+        motion_state["direction"] = "unknown"
+    except Exception as e:
+        motion_state["sensor_status"] = "error"
+        motion_state["sensor_error"] = str(e)
+        return
+
     was_detected = False
     is_inside = False
+
     while True:
         try:
             now = ir_sensor.detected()
+            motion_state["detected"] = now
+
             if now and not was_detected:
                 is_inside = not is_inside
-                action = "進來" if is_inside else "出去"
-                time_str = get_current_time()[2]
+
+                if is_inside:
+                    motion_state["direction"] = "near"
+                    action = "進來"
+                else:
+                    motion_state["direction"] = "away"
+                    action = "出去"
+
+                date_str, weekday_str, time_str = get_current_time()
+                now_str = f"{date_str} {time_str}"
+
+                motion_state["last_detected_at"] = now_str
                 motion_state["count"] += 1
-                motion_state["history"].append({"time": time_str, "action": action, "count": motion_state["count"]})
-                if len(motion_state["history"]) > 5:
-                    motion_state["history"].pop(0)
-                await buzzer.play_melody()
+                motion_state["music_status"] = "playing"
+
+                history = motion_state.get("history", [])
+                history.append({
+                    "time": now_str,
+                    "action": action,
+                    "count": motion_state["count"],
+                })
+                if len(history) > 5:
+                    history = history[-5:]
+                motion_state["history"] = history
+
+                print(f"[PIR] {action}！(第 {motion_state['count']} 次)")
+
+                try:
+                    await buzzer.play_melody()
+                    motion_state["music_status"] = "completed"
+                except Exception as e:
+                    motion_state["music_status"] = "error"
+                    motion_state["music_error"] = str(e)
+
             was_detected = now
             await uasyncio.sleep_ms(config.IR_POLL_INTERVAL_MS)
-        except Exception:
+
+        except Exception as e:
+            motion_state["sensor_status"] = "error"
+            motion_state["sensor_error"] = str(e)
+            print(f"[PIR] 讀取異常: {e}")
             await uasyncio.sleep(1)
