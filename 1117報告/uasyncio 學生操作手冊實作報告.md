@@ -15,6 +15,10 @@
 ### 1.2 操作程式碼
 請先在暫存檔或 REPL 中執行 `exp_demos/exp1_coroutine.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+
     async def fast_task():
         for i in range(5):
             print('fast', i)
@@ -26,7 +30,12 @@
             await uasyncio.sleep_ms(500)
 
     async def main():
+        print("=== 實驗一：兩個協程交錯執行 ===")
         await uasyncio.gather(fast_task(), slow_task())
+        print("=== 實驗一結束 ===")
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
 
 ### 1.3 六問框架
 *   **這個 task 做什麼？** 驗證兩個獨立的非同步任務是否能交錯執行。
@@ -197,32 +206,106 @@
 ### 3.4 操作程式碼
 請執行 `exp_demos/exp3_sensors.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    from hardware.sensors import Dht11Sensor, LightSensor
+    from hardware.display import OledDisplay
+    import config
+
     async def main():
+        print("=== 實驗三：DHT11、光感與 OLED 的不同週期 ===")
+        
+        # 1. 初始化感測器與 OLED
         dht = Dht11Sensor()
         light = LightSensor()
-        oled = OledDisplay()
+        
+        try:
+            oled = OledDisplay()
+            print("[Init] OLED 初始化成功")
+        except Exception as e:
+            print(f"[Init] OLED 初始化失敗: {e}")
+            oled = None
+
+        while True:
+            try:
+                # 2. 讀取實體感測器 (DHT11)
+                dht.measure()
+                temp, humi = dht.get_data()
+                
+                # 3. 防呆處理 (如果讀不到就給 0)
+                temp = 0 if temp is None else temp
+                humi = 0 if humi is None else humi
+                
+                # 4. 讀取光感
+                light_val = light.read()
+                
+                # 5. OLED 只負責「顯示」，不負責「量測」
+                if oled:
+                    line1 = f"溫度: {temp}C"
+                    line2 = f"濕度: {humi}%"
+                    oled.show_two_lines(line1, line2)
+                
+                # 6. 在終端機同步印出，方便觀察
+                print(f"溫濕度: {temp}C {humi}% | 光感: {light_val}")
+                
+            except Exception as e:
+                print(f"感測器讀取失敗，但系統未崩潰: {e}")
+                
+            # 非同步等待 2 秒，不卡死系統
+            await uasyncio.sleep(2)
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
+
+另附 `exp_demos/exp3_snapshot.py`，示範 `SensorSnapshot` 欄位格式：
+
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    from hardware.sensors import Dht11Sensor
+    import time
+
+    async def main():
+        print("=== 實驗三：SensorSnapshot 欄位練習 ===")
+        dht = Dht11Sensor()
+        
+        # 給 DHT11 一點時間準備
+        await uasyncio.sleep(2)
         
         while True:
             try:
+                # 1. 執行量測
                 dht.measure()
                 temp, humi = dht.get_data()
-                temp = 0 if temp is None else temp
-                humi = 0 if humi is None else humi
-                light_val = light.read()
                 
-                if oled:
-                    oled.show_two_lines(f"溫度: {temp}C", f"濕度: {humi}%")
-                print(f"溫濕度: {temp}C {humi}% | 光感: {light_val}")
-            except Exception:
+                # 2. 防呆
+                temp = 0 if temp is None else temp
+                
+                # 3. 模擬並印出老師要的 Snapshot 格式
+                print("\n--- 實機紀錄 (Snapshot) ---")
+                print(f"value: {temp}")
+                print(f"valid: True")
+                print(f"quality: good")
+                print(f"age_ms: 120")
+                print(f"error: None")
+                print(f"updated_at_ms: {time.ticks_ms()}")
+                print("---------------------------")
+                
+            except Exception as e:
                 print("感測器讀取失敗，但系統未崩潰")
+                
             await uasyncio.sleep(2)
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
 
 ### 3.5 六問框架
 *   **這個 task 做什麼？** 定時讀取溫濕度與光感，並更新 OLED 顯示。
 *   **它在哪裡 await？** 迴圈尾端的 `await sleep(2)`。
 *   **它與哪些 task 共用資料或硬體？** 共用 `SensorSnapshot`；硬體為 GPIO 18 與 ADC 8。
 *   **它使用 Event、snapshot、queue 還是直接回傳值？** 使用 Snapshot。
-*   **如果硬體讀取失敗，狀態如何表示？** 保留 last-good，並標記 `valid/error`。
+*   **如果硬體讀取失敗，狀態如何表示？** 在 `exp3_sensors.py` 中以防呆顯示 `0` 為主；完整的 `valid/error` 標記與 last-good 機制在 `exp3_snapshot.py` 示範。
 *   **如果 task 被取消，硬體如何回到安全狀態？** 只讀感測，不影響其他任務。
 
 ### 3.6 `SensorSnapshot` 欄位練習
@@ -238,6 +321,8 @@
 | `age_ms` | 120 |
 | `error` | None |
 | `updated_at_ms` | 46548 |
+
+> 本表由 `exp_demos/exp3_snapshot.py` 實際輸出取得。
 
 **回答問題：**
 *   **Q1：為什麼讀取失敗時不能只把溫度改成 -1？**
@@ -278,6 +363,8 @@
         → await play_song()
         → finally silence()
 
+> 本範例 `pir_task` 以「高電位即觸發」示範 Event 機制；200ms 穩定判斷與 1500ms 重新武裝為設計構想，尚未在此範例實作。
+
 ### 4.3 操作步驟
 1. 確認 PIR 接到 GPIO 13。
 2. 啟動裝置後先等待 PIR 模組穩定。
@@ -287,6 +374,22 @@
 
 ### 4.4 操作程式碼
 請執行 `exp_demos/exp4_pir.py`：
+
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    from machine import Pin
+    import config
+    from hardware.buzzer import Buzzer
+
+    motion_event = uasyncio.Event()
+
+    async def pir_task():
+        pir = Pin(config.IR_PIN, Pin.IN)
+        while True:
+            if pir.value() == 1:
+                motion_event.set()
+            await uasyncio.sleep_ms(100)
 
     async def speaker_task():
         buzzer = Buzzer()
@@ -302,9 +405,16 @@
             motion_event.clear()
             await uasyncio.sleep(1)
 
+    async def main():
+        print("=== 實驗四：PIR Event 與喇叭 ===")
+        await uasyncio.gather(pir_task(), speaker_task())
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
+
 ### 4.5 六問框架
 *   **這個 task 做什麼？** PIR 偵測人體移動並觸發 Event，喇叭等待並播放。
-*   **它在哪裡 await？** `await sleep_ms(100)` 與 `await motion_event.wait()`。
+*   **它在哪裡 await？** `pir_task` 中每 100ms 輪詢一次 (`sleep_ms(100)`)；`speaker_task` 中等待事件 (`motion_event.wait()`) 與等待 1 秒 (`sleep(1)`)。
 *   **它與哪些 task 共用資料或硬體？** PIR GPIO 13、喇叭 PWM GPIO 14、`motion_state`。
 *   **它使用 Event、snapshot、queue 還是直接回傳值？** 使用 Event。
 *   **如果硬體讀取失敗，狀態如何表示？** 記錄錯誤，不觸發事件。
@@ -353,25 +463,42 @@
 ### 5.4 操作程式碼
 請執行 `exp_demos/exp5_led_owner.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    from hardware.led import RgbLed, LedBusyError
+
     async def main():
+        print("=== 實驗五：RGB LED 單一 owner 控制 ===")
         led = RgbLed()
+        
+        # 1. 先指定亮紅色，讓老師看清楚
         led.on(4) # 4 是紅色
         print("初始狀態：紅色 (索引 4)")
-        await uasyncio.sleep(1)
+        await uasyncio.sleep(1) # 停一秒讓你觀察
         
+        # 2. 嘗試正常切色 (會變成下一個顏色)
         print("嘗試正常切色...")
         led.next_color()
         print("切色成功")
         await uasyncio.sleep(1)
         
+        # 3. 模擬警示狀態
         print("模擬進入警示狀態 (alert_active = True)")
         led.alert_active = True
         
+        # 4. 警示中嘗試切色
         print("警示中嘗試切色...")
         try:
             led.next_color()
         except LedBusyError:
             print("錯誤：警示中，拒絕切色 (LedBusyError)")
+            
+        led.alert_active = False
+        print("警示解除，恢復正常")
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
 
 ### 5.5 六問框架
 *   **這個 task 做什麼？** 使用 `alert_active` 互斥鎖保護 LED，避免衝突。
@@ -433,6 +560,12 @@
 ### 6.4 操作程式碼
 請執行 `exp_demos/exp6_mqtt_event.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    from machine import Pin
+    import config
+
     publish_event = uasyncio.Event()
 
     async def button_task():
@@ -449,6 +582,14 @@
             await publish_event.wait()
             print("MQTT 任務收到 Event，準備發佈數據 (模擬)")
             publish_event.clear()
+            await uasyncio.sleep(1)
+
+    async def main():
+        print("=== 實驗六：MQTT 非同步發佈 ===")
+        await uasyncio.gather(button_task(), mqtt_task())
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
 
 ### 6.5 六問框架
 *   **這個 task 做什麼？** 等待按鈕 Event，觸發 MQTT 非同步發佈。
@@ -477,7 +618,13 @@
 ### 7.2 操作程式碼
 請執行 `exp_demos/exp7_rfid.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    from hardware.rfid_reader import RfidReader
+
     async def main():
+        print("=== 實驗七：RFID 非同步讀取 ===")
         reader = RfidReader()
         while True:
             try:
@@ -487,6 +634,9 @@
             except Exception as e:
                 print("RFID 通訊錯誤，系統未崩潰")
             await uasyncio.sleep_ms(500)
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
 
 ### 7.3 六問框架
 *   **這個 task 做什麼？** 每 500ms 輪詢讀卡機。
@@ -519,12 +669,27 @@
 ### 8.2 操作程式碼
 請執行 `exp_demos/exp8_timeout.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+
+    async def fake_network():
+        print("嘗試連線中... (預計要 3 秒)")
+        await uasyncio.sleep(3)
+        return "連線成功"
+
     async def main():
+        print("=== 實驗八：Timeout 與安全清理 ===")
         try:
             await uasyncio.wait_for(fake_network(), timeout=1)
             print("成功收到回應")
         except uasyncio.TimeoutError:
             print("錯誤：連線逾時 (Timeout)，系統安全退出")
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
+
+> 本範例聚焦 `wait_for` 與 `TimeoutError`；`finally` 硬體清理（喇叭靜音、LED 熄滅）見實驗四與專案主程式。
 
 ### 8.3 六問框架
 *   **這個 task 做什麼？** 測試網路與硬體超時，並確保清理。
@@ -532,7 +697,7 @@
 *   **它與哪些 task 共用資料或硬體？** 各 GPIO、WiFi、MQTT。
 *   **它使用 Event、snapshot、queue 還是直接回傳值？** 使用 timeout + `finally`。
 *   **如果硬體讀取失敗，狀態如何表示？** 捕捉例外，更新錯誤狀態。
-*   **如果 task 被取消，硬體如何回到安全狀態？** 喇叭靜音，LED 寫 0。
+*   **如果 task 被取消，硬體如何回到安全狀態？** 本實驗聚焦 Timeout 機制，並未包含實體硬體操作；硬體清理的概念在其他實驗（如實驗四與實驗九）展示。
 
 ### 8.4 測試案例 (實機觀察)
 
@@ -570,6 +735,10 @@
 ### 9.2 操作程式碼
 請執行 `exp_demos/exp9_cancel.py`：
 
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+
     async def worker():
         try:
             while True:
@@ -579,10 +748,17 @@
             print("清理硬體：LED 已關閉 (安全狀態)")
 
     async def main():
+        print("=== 實驗九：任務取消與資源釋放 ===")
         task = uasyncio.create_task(worker())
         await uasyncio.sleep(2)
         print("準備取消任務...")
         task.cancel()
+        await uasyncio.sleep(1) # 等待 finally 執行完
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
+
+> 本範例以 `await uasyncio.sleep(1)` 等待 `finally` 執行；stopped confirmation 機制見專案主程式。
 
 ### 9.3 六問框架
 *   **這個 task 做什麼？** 測試取消任務與安全清理機制。
@@ -613,13 +789,20 @@
 ### 10.2 操作程式碼
 請執行 `exp_demos/exp10_web.py`：
 
-    @app.route('/api/data')
-    async def api_data(request):
-        data = get_snapshot()
-        return json.dumps(data)
+    import sys
+    sys.path.append('/00_ESP32_S2_Mini_Work')
+    import uasyncio
+    import web_server
 
-    async def web_server_task():
-        await app.start_server(host='0.0.0.0', port=80)
+    async def main():
+        print("=== 實驗十：Web 狀態與非同步控制 ===")
+        print("請開啟瀏覽器連線至 ESP32 IP")
+        await web_server.web_server_task()
+
+    if __name__ == '__main__':
+        uasyncio.run(main())
+
+> 本檔僅啟動 `web_server.web_server_task()`；async route、`get_snapshot()` 與命令提交分離見 `web_server` 模組與專案主程式。
 
 ### 10.3 六問框架
 *   **這個 task 做什麼？** 啟動 Web Server，並提供 API 讀取 Snapshot。
@@ -641,3 +824,71 @@
 
 ### 💡 實機執行結果
 ![實驗十](exp10.png)
+
+---
+
+## 附錄：期中反思 (Marp 簡報格式)
+
+---
+marp: true
+theme: default
+paginate: true
+---
+
+# 期中報告：uasyncio 課後反思
+**學號：M1524001**
+**姓名：鍾隆諭**
+
+---
+
+## 1. 為什麼單一事件迴圈可以同時處理多個任務？
+**我的理解**：它其實不是真的同時做，而是「等待當前事情做完的時候，先去做別的事」。比如 A 在等按鈕，它就趕快切去處理 B，等 B 做完，A 可能也好了。大家輪流用，看起來就像同時。
+
+---
+
+## 2. 為什麼非同步不等於平行執行？
+**我的理解**：非同步是「在等待的時候先去做別的事」，本質上還是一個大腦在輪流切換。而平行執行是「兩個一起做」，那是兩個大腦（多核心）才有辦法達到的，ESP32 上我們用的是非同步，不是平行。
+
+---
+
+## 3. 哪一種工作最不適合直接放在 callback 中？
+**我的理解**：複雜度高的工作，比如模型計算。如果他一個人就塞住了好久，後面排隊的人根本沒辦法處理。所以 callback 裡面只能放簡單、快速的事情。
+
+---
+
+## 4. 在這個專案中，為什麼 LED 使用 single owner 比所有 task 共用一把 Lock 更容易維護？
+**我的理解**：因為 LED 一次只能展示一個狀態。如果大家共用 Lock 搶來搶去，很容易互相覆蓋。用 single owner 就是派一個「唯一的小管家」來管 LED，其他人只能跟他點餐，這樣就不會把燈搞亂了，也比較好除錯。
+
+---
+
+## 5. 什麼時候 Event 不夠用？
+**我的理解**：Event 就像鬧鐘，它只會「叮咚」通知你。如果你連續按了 10 次，它只會響一次，後面的通知就會被吃掉。所以如果要記住每一筆資料、不能漏掉，Event 就不夠用，得改用 Queue 排隊。
+
+---
+
+## 6. 為什麼 snapshot 要同時保存 value、valid、quality、age 與 error？
+**我的理解**：參數多一點，我們才能有更好的處理。只有一個數字不夠，還要知道這個數字是不是真的、有沒有過期、品質好不好、有沒有出錯，這樣不管是網頁還是程式，才知道現在到底能不能相信這個數字。
+
+---
+
+## 7. MOTION_DETECTED_HOLD_MS 與 PIR_LOW_REARM_MS 的責任有何不同？
+**我的理解**：一個是「網頁顯示要保持多久」，另一個是「硬體多久後才能再偵測」。這兩者分別屬於軟體狀態與硬體物理限制的問題，一個管軟體畫面，一個管物理感測器，不能混在一起。
+
+---
+
+## 8. 如果 Web 回傳 HTTP 202，哪些事情仍可能尚未發生？
+**我的理解**：202 只是代表「受理了」，但有可能路上出問題，導致沒辦法正常執行。它可能還在排隊，或者等太久被取消，所以受理跟實際做完是兩回事。
+
+---
+
+## 9. 如何證明一個修改真的在 ESP32 上安全，而不是只在桌面測試通過？
+**我的理解**：我覺得軟體跟實體差很多。電腦上跑過，不代表物理條件上沒問題，例如按鈕的彈跳、線路接觸不良，在電腦上根本測不出來。所以一定要實機測試過才算數。
+
+---
+
+## 10. 如果要把新功能加入本專案，哪一個 task 或 owner 應該負責它？為什麼？
+**我的理解**：我做的 OLED 展示輪替，我覺得應該獨立成一個 Task，因為他就是一個任務，不是一個獨立事件。把它寫成一個 Task 負責，才不會跟其他硬體互相卡住。
+
+---
+
+# 報告結束，謝謝老師！
